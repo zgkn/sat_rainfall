@@ -226,8 +226,17 @@ def demo_days(days, places=()):
             hour = mm / 24 * diurnal[h] * rng.uniform(0.6, 1.4)
             for k, p in enumerate(places):
                 tsm[h, k], tsx[h, k] = p.stats(hour)
-        out.append({"date": day, "mm": mm, "hours": 24, "tsm": tsm, "tsx": tsx})
+        out.append({"date": day, "mm": mm, "hours": 24, "have": np.ones(24, bool), "partial": False, "tsm": tsm, "tsx": tsx})
     return out
+
+
+def demo_partial(entry, hours):
+    """Make a demo day look like a day in progress: only the first `hours` hours exist."""
+    have = np.arange(24) < hours
+    entry.update({"hours": hours, "have": have, "partial": True, "in_progress": True})
+    entry["tsm"] = np.where(have[:, None], entry["tsm"], np.nan).astype(np.float32)
+    entry["tsx"] = np.where(have[:, None], entry["tsx"], np.nan).astype(np.float32)
+    return entry
 
 
 # ---- output ----------------------------------------------------------------------------------------------
@@ -252,8 +261,10 @@ def clean(values, nd):
     return [None if not np.isfinite(v) else round(float(v), nd) for v in values]
 
 
-def write_site(out, days, places, product, demo, assets):
-    """days: [{date, mm (mm/day field), hours, tsm, tsx}] oldest first."""
+def write_site(out, days, places, product, demo, assets, columns=None):
+    """days: [{date, mm (mm/day field), hours, tsm, tsx}] oldest first. `places` are the places of the page; `columns` are
+    the places of the series in `tsm`/`tsx` (default: the same; the combined areas of summary.json are extra columns)."""
+    col = {p.id: k for k, p in enumerate(columns or places)}
     out = Path(out)
     data = out / "data"
     if out.exists():
@@ -280,7 +291,8 @@ def write_site(out, days, places, product, demo, assets):
     hours_t = [int(dt.datetime(d["date"].year, d["date"].month, d["date"].day, h, tzinfo=dt.timezone.utc).timestamp())
                for d in days for h in range(24)]
     series = {}
-    for k, p in enumerate(places):
+    for p in places:
+        k = col[p.id]
         daily = [p.stats(d["mm"]) for d in days]
         series[p.id] = {
             "hourly": {"mean": clean(np.concatenate([d["tsm"][:, k] for d in days]), 2),
@@ -308,6 +320,61 @@ def write_site(out, days, places, product, demo, assets):
     return manifest
 
 
+# ---- summary.json and the files of the `data` branch -----------------------------------------------------
+def iso(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_summary(days, columns, product, demo=False, generated=None):
+    """Machine-readable results of the week for every place of `columns` (the places of `tsm`/`tsx`).
+
+    days: [{date, mm, hours, have (bool per hour), tsm, tsx, partial, in_progress?}] oldest first. The hourly values of an
+    earlier day cover all 24 hours (null where the hourly file is missing); the day in progress only runs up to its last hour.
+    """
+    generated = generated or dt.datetime.now(dt.timezone.utc)
+    out_days = [{"date": str(d["date"]), "hours": int(d["hours"]), "partial": bool(d["partial"])} for d in days]
+    areas_out = {}
+    for k, p in enumerate(columns):
+        daily = [p.stats(d["mm"]) for d in days]
+        hourly = {"mean": [], "max": []}
+        for d in days:
+            have = np.flatnonzero(d["have"])
+            last = int(have.max()) if have.size else -1
+            for h in range(last + 1 if d.get("in_progress") else 24):
+                t = iso(dt.datetime(d["date"].year, d["date"].month, d["date"].day, h, tzinfo=dt.timezone.utc))
+                for name, ts in (("mean", d["tsm"]), ("max", d["tsx"])):
+                    hourly[name].append({"time": t, "value": clean([ts[h, k]], 2)[0]})
+        a = {"name": p.name, "kind": p.kind, "group": p.group}
+        if p.members:
+            a["members"] = p.members
+        a.update({"cells": round(p.cells, 1),
+                  "daily_mean": clean([m for m, _ in daily], 1), "daily_max": clean([x for _, x in daily], 1),
+                  "hourly_mean": hourly["mean"], "hourly_max": hourly["max"]})
+        areas_out[p.id] = a
+    return {
+        "generated_at": iso(generated),
+        "product": product,
+        "source": "JAXA GSMaP (demo data)" if demo else f"JAXA {PRODUCT_NAME[product]} hourly, 0.1 degree",
+        "units": {"daily": "mm/day", "hourly": "mm/h"},
+        "statistics": {"mean": "mean of the cells, each weighted by the fraction of it inside the area",
+                       "max": "largest cell among those at least half inside the area"},
+        "days": out_days,
+        "areas": areas_out,
+    }
+
+
+def write_publish(publish_dir, site_dir, summary):
+    """The files of the `data` branch: summary.json, copies of the site's manifest.json and rain.bin.gz, a README."""
+    publish_dir = Path(publish_dir)
+    publish_dir.mkdir(parents=True, exist_ok=True)
+    (publish_dir / "summary.json").write_text(json.dumps(summary, separators=(",", ":")))
+    for name in ("manifest.json", "rain.bin.gz"):
+        shutil.copy(Path(site_dir) / "data" / name, publish_dir / name)
+    shutil.copy(HERE / "data_branch_README.md", publish_dir / "README.md")
+    print(f"wrote {publish_dir}: summary.json {(publish_dir / 'summary.json').stat().st_size / 1e3:.0f} kB, "
+          f"{len(summary['areas'])} areas, {len(summary['days'])} days", flush=True)
+
+
 # ---- main ------------------------------------------------------------------------------------------------
 def window(end, n):
     return [end - dt.timedelta(days=n - 1 - i) for i in range(n)]
@@ -328,6 +395,12 @@ def main(argv=None):
     ap.add_argument("--cache-dir", type=Path, default=HERE / "cache")
     ap.add_argument("--assets", type=Path, help="folder holding coastlines.geojson (a model_forecast checkout)")
     ap.add_argument("--out", type=Path, default=HERE / "site")
+    ap.add_argument("--include-today", action="store_true",
+                    help="summary.json also gets the current UTC day, flagged partial, from the hourly files there are so far "
+                         "(the site and the complete-days rules are not affected)")
+    ap.add_argument("--today", type=dt.date.fromisoformat, help=argparse.SUPPRESS)     # tests: pretend this is the UTC date
+    ap.add_argument("--publish-dir", type=Path,
+                    help="also write the files of the `data` branch here: summary.json, manifest.json, rain.bin.gz, README.md")
     ap.add_argument("--demo", action="store_true", help="synthetic data instead of downloading (layout check only)")
     ap.add_argument("--list", metavar="PATH", help="print the server folder PATH and exit (to find the data layout)")
     a = ap.parse_args(argv)
@@ -335,8 +408,15 @@ def main(argv=None):
     user = os.environ.get("GSMAP_USER", "").strip()          # pasted secrets often carry a trailing newline or space
     pw = os.environ.get("GSMAP_PASSWORD", "").strip()
     dirs = [d.strip() for d in a.remote_dir.split(",")] if a.remote_dir else REMOTE_DIRS[a.product]
-    end = a.end or (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1))
+    today = a.today or dt.datetime.now(dt.timezone.utc).date()
+    end = a.end or (today - dt.timedelta(days=1))
     days = window(end, a.days)
+    extra = []                              # the day in progress: only for summary.json
+    if a.include_today:
+        if today in days:
+            warn(f"--include-today ignored: {today} is already one of the days")
+        else:
+            extra = [today]
 
     if a.list is not None:
         if not (user and pw):
@@ -348,14 +428,23 @@ def main(argv=None):
     regions = a.assets / "regions.geojson" if a.assets else None
     if regions is not None and not regions.exists():
         warn(f"{regions} not found: only the Singapore box gets a time series")
-    places = areas.load_places(GRID, regions)
+    site_places = areas.load_places(GRID, regions)
+    joined, missing = areas.combined_places(site_places)
+    if missing and a.publish_dir:
+        sys.exit(f"cannot publish the data branch files: areas {', '.join(missing)} are missing (use --assets "
+                 f"<model_forecast checkout> for regions.geojson)")
+    places = site_places + joined           # the cache and summary.json carry the combined areas, the site does not
+    today_entry = None
 
     if a.demo:
-        result = demo_days(days, places)
+        shown = demo_days(days + extra, places)
+        if extra:
+            today_entry = demo_partial(shown.pop(), 7)
+        result = shown
     else:
         if not (user and pw):
             sys.exit("GSMAP_USER and GSMAP_PASSWORD are not set (register free at "
-                     "https://sharaku.eorc.jaxa.jp/GSMaP/registration.htm), or use --demo")
+                     "https://sharaku.eorc.jaxa.jp/GSMaP/registration.html), or use --demo")
 
         def one(day):
             c = Ftp(a.host, user, pw, dirs)
@@ -366,7 +455,7 @@ def main(argv=None):
 
         try:
             with ThreadPoolExecutor(max(1, a.workers)) as pool:
-                fetched = list(pool.map(one, days))
+                fetched = list(pool.map(one, days + extra))
         except ftplib.error_perm as e:
             if str(e).startswith("530"):
                 sys.exit(f"JAXA rejected the login ({e}). Check GSMAP_USER / GSMAP_PASSWORD: use exactly the user name and "
@@ -379,15 +468,23 @@ def main(argv=None):
             if n < a.min_hours:
                 warn(f"{day}: only {n} hourly files (need {a.min_hours}); the day is left out")
                 continue
-            result.append({"date": day, "mm": daily_mm(s, c, a.min_hours), "hours": n, "tsm": tsm, "tsx": tsx})
-        keep = {day_cache(a.cache_dir, d).name for d in days}
+            result.append({"date": day, "mm": daily_mm(s, c, a.min_hours), "hours": n, "have": hours, "partial": n < 24,
+                           "tsm": tsm, "tsx": tsx})
+        if extra:                           # no minimum of hours: the cells need one valid hour, the day is flagged partial
+            s, c, hours, tsm, tsx = fetched[len(days)]
+            today_entry = {"date": today, "mm": daily_mm(s, c, 1), "hours": int(hours.sum()), "have": hours, "partial": True,
+                           "in_progress": True, "tsm": tsm, "tsx": tsx}
+        keep = {day_cache(a.cache_dir, d).name for d in days + extra}
         for old in Path(a.cache_dir).glob("day_*.npz"):          # the cache only ever holds the current window
             if old.name not in keep:
                 old.unlink()
         if not result:
             sys.exit(f"no usable days. Check the account and the server layout: python gsmap.py --list / "
                      f"(tried {', '.join(dirs)})")
-    write_site(a.out, result, places, a.product, a.demo, a.assets)
+    write_site(a.out, result, site_places, a.product, a.demo, a.assets, columns=places)
+    if a.publish_dir:
+        summary = build_summary(result + ([today_entry] if today_entry else []), places, a.product, a.demo)
+        write_publish(a.publish_dir, a.out, summary)
     return 0
 
 

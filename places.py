@@ -18,6 +18,15 @@ MIN_VALID = 0.5             # the mean needs valid cells covering at least this 
 BOXES = [{"id": "sg", "name": "Singapore", "south": 1.125, "north": 1.625, "west": 103.625, "east": 104.125}]
 
 
+# areas made of several places: the cell weights of the members are added (a cell shared by two members counts once, at
+# most fully), so the mean and the "at least half inside" maximum are those of the joined area
+COMBINED = [
+    {"id": "sumatra", "name": "Sumatra (Jambi+South Sumatra)", "members": ["jambi", "ssum"]},
+    {"id": "kalimantan", "name": "Kalimantan (West+Central+South)", "members": ["wkal", "ckal", "skal"]},
+    {"id": "mainland_north", "name": "Mainland north (5 countries)", "members": ["khm", "lao", "mmr", "tha", "vnm"]},
+]
+
+
 class Grid(NamedTuple):
     lat_n: float            # north edge of row 0
     lon_w: float            # west edge of column 0
@@ -80,8 +89,10 @@ def coverage(geometry, grid, oversample=OVERSAMPLE):
 
 
 class Place:
-    def __init__(self, pid, name, kind, group, box, weights):
+    def __init__(self, pid, name, kind, group, box, weights, members=None):
         self.id, self.name, self.kind, self.group, self.box = pid, name, kind, group, box
+        self.members = list(members) if members else None
+        self.shape = weights.shape
         flat = weights.reshape(-1)
         self.idx = np.flatnonzero(flat > 1e-6)
         if not self.idx.size:
@@ -101,9 +112,18 @@ class Place:
         t = t[np.isfinite(t)]
         return mean, (float(t.max()) if t.size else np.nan)
 
+    def dense(self):
+        """The cell weights as a (ny, nx) array."""
+        out = np.zeros(int(np.prod(self.shape)), "float32")
+        out[self.idx] = self.w
+        return out.reshape(self.shape)
+
     def describe(self):
-        return {"id": self.id, "name": self.name, "kind": self.kind, "group": self.group, "box": self.box,
-                "cells": round(self.cells, 1)}
+        d = {"id": self.id, "name": self.name, "kind": self.kind, "group": self.group, "box": self.box,
+             "cells": round(self.cells, 1)}
+        if self.members:
+            d["members"] = self.members
+        return d
 
 
 def load_places(grid, regions_path=None):
@@ -119,3 +139,20 @@ def load_places(grid, regions_path=None):
             places.append(Place(p["id"], p["name"], "region", p.get("group", "Regions"), bounds(f["geometry"]),
                                 coverage(f["geometry"], grid)))
     return places
+
+
+def combined_places(places, specs=COMBINED):
+    """(the combined places that can be built from `places`, the ids of the members that are missing)."""
+    by_id = {p.id: p for p in places}
+    out, missing = [], []
+    for spec in specs:
+        gone = [m for m in spec["members"] if m not in by_id]
+        if gone:
+            missing += gone
+            continue
+        members = [by_id[m] for m in spec["members"]]
+        w = np.minimum(sum(m.dense() for m in members), 1.0).astype("float32")
+        box = [[min(m.box[0][0] for m in members), min(m.box[0][1] for m in members)],
+               [max(m.box[1][0] for m in members), max(m.box[1][1] for m in members)]]
+        out.append(Place(spec["id"], spec["name"], "combined", "Combined", box, w, members=spec["members"]))
+    return out, missing

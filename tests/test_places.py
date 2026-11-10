@@ -88,3 +88,43 @@ def test_all_model_forecast_regions_load_inside_the_grid():
     by = {p.id: p for p in ps}
     assert 4000 < by["tha"].cells < 4700                                 # Thailand: ~513,000 km2 at ~121 km2 per 0.1 degree cell
     assert by["ktinggi"].cells > 20
+
+
+def _place(pid, cells):
+    w = np.zeros((GRID.ny, GRID.nx), "float32")
+    for (j, i), v in cells.items():
+        w[j, i] = v
+    return places.Place(pid, pid.upper(), "region", "Test", [[0, 0], [1, 1]], w)
+
+
+def test_combined_area_adds_the_member_weights():
+    a, b = _place("a", {(10, 10): 1.0, (10, 11): 0.3}), _place("b", {(20, 20): 1.0, (10, 11): 0.3})
+    (c,), missing = places.combined_places([a, b], [{"id": "c", "name": "C", "members": ["a", "b"]}])
+    assert missing == [] and c.kind == "combined" and c.members == ["a", "b"] and c.group == "Combined"
+    assert c.cells == pytest.approx(2.6)
+    assert c.dense()[10, 11] == pytest.approx(0.6)                      # the shared cell counts for both members
+    assert c.describe()["members"] == ["a", "b"]
+
+
+def test_combined_maximum_uses_the_summed_coverage():
+    a, b = _place("a", {(10, 10): 1.0, (10, 11): 0.3}), _place("b", {(20, 20): 1.0, (10, 11): 0.3})
+    (c,), _ = places.combined_places([a, b], [{"id": "c", "name": "C", "members": ["a", "b"]}])
+    f = np.zeros((GRID.ny, GRID.nx), "float32")
+    f[10, 10], f[10, 11], f[20, 20] = 1.0, 9.0, 2.0
+    assert a.stats(f)[1] == 1.0 and b.stats(f)[1] == 2.0                # alone, the shared cell is under half inside
+    assert c.stats(f)[1] == 9.0                                         # together it is 0.6 inside
+
+
+def test_combined_area_with_a_missing_member_is_skipped():
+    a = _place("a", {(10, 10): 1.0})
+    out, missing = places.combined_places([a], [{"id": "c", "name": "C", "members": ["a", "zzz"]}])
+    assert out == [] and missing == ["zzz"]
+
+
+@pytest.mark.skipif(not MODEL_FORECAST.exists(), reason="model_forecast checkout not available")
+def test_the_three_combined_areas_exist_for_the_real_regions():
+    base = places.load_places(GRID, MODEL_FORECAST)
+    combined, missing = places.combined_places(base)
+    assert missing == [] and [c.id for c in combined] == ["sumatra", "kalimantan", "mainland_north"]
+    by = {p.id: p for p in base}
+    assert combined[0].cells == pytest.approx(by["jambi"].cells + by["ssum"].cells, abs=1.0)

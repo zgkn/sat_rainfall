@@ -18,16 +18,23 @@ on:
   schedule:
     # GSMaP_NRT lags real time by about 4 h, so yesterday's last hour (23-24 UTC) is there by ~04:00 UTC.
     - cron: "17 5 * * *"
+    # every 3 hours, for the `data` branch: the cache means only the new hours of the day in progress are downloaded
+    - cron: "47 */3 * * *"
   push:
-    branches: ["**"]
+    branches-ignore: [data]      # the data branch is written by this workflow
     paths-ignore: ["README.md"]
 
 permissions:
   contents: read
 
+# Scheduled and manual runs share one group and wait for each other (they all write the `data` branch, so they must not
+# overlap); a push only runs the tests, so a newer push replaces an older one.
 concurrency:
-  group: gsmap-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  group: gsmap-${{ github.ref }}-${{ github.event_name == 'push' && 'push' || 'build' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  IS_DEFAULT: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
 jobs:
   test:
@@ -56,6 +63,8 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: write            # the `data` branch is force-pushed by the last step of this job
     steps:
       - uses: actions/checkout@v4
 
@@ -91,7 +100,8 @@ jobs:
           DAYS: ${{ inputs.days || '7' }}
           PRODUCT: ${{ inputs.product || 'nrt' }}
           DEMO: ${{ inputs.demo && '--demo' || '' }}
-        run: python gsmap.py --days "$DAYS" --product "$PRODUCT" $DEMO --assets model_forecast --out site
+        # --include-today only feeds summary.json (the day in progress); the page is built from complete days as before
+        run: python gsmap.py --days "$DAYS" --product "$PRODUCT" $DEMO --include-today --assets model_forecast --out site --publish-dir publish
 
       - name: Check the output
         run: |
@@ -99,7 +109,35 @@ jobs:
           test -s site/data/rain.bin.gz
           jq -r '"\(.source): \(.days | length) days, built \(.generated)"' site/data/manifest.json
           jq -e '(.days | length) >= 1' site/data/manifest.json
-          du -sh site
+          jq -e '(.areas | has("sg", "sumatra", "kalimantan", "mainland_north")) and (.days | length) >= 1' publish/summary.json
+          du -sh site publish
+
+      # The `data` branch holds the latest results as machine-readable files: a single commit, force-pushed each time (the
+      # same pattern as the hotspot and wind-map repos). Only the default branch writes it, and never synthetic data, so
+      # a test run cannot overwrite it. The token is only in this step's environment and is never printed.
+      - name: Update the data branch
+        # also after a failed earlier step, but then only from files that were written completely
+        if: ${{ !cancelled() && env.IS_DEFAULT == 'true' && !inputs.demo }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if ! jq -e '(.areas | has("sg", "sumatra", "kalimantan", "mainland_north")) and (.days | length) >= 1' publish/summary.json >/dev/null 2>&1 ||
+             [ ! -s publish/manifest.json ] || [ ! -s publish/rain.bin.gz ] || [ ! -s publish/README.md ]; then
+            echo "::warning title=data branch::no complete results were produced, so the data branch was not updated"
+            exit 0
+          fi
+          cd publish
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git checkout -q --orphan latest
+          git add -A
+          git commit -q -m "GSMaP rainfall data: $(jq -r '"\(.days[0].date) to \(.days[-1].date), built \(.generated_at)"' summary.json)"
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push -q --force origin latest:data
+          echo "data branch updated: $(git log -1 --format=%s)"
 
       # downloadable from the run page, also when the run was started from a branch that does not deploy
       - uses: actions/upload-artifact@v4
