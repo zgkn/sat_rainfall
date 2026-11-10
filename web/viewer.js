@@ -28,10 +28,9 @@
     var BOUNDS = [[G.lat_s, G.lon_w], [G.lat_n, G.lon_e]];
 
     // ---- map ------------------------------------------------------------------------------------
-    var map = L.map("map", {
-      zoomControl: true, zoomSnap: 0.25, minZoom: 3, maxZoom: 9, worldCopyJump: false,
-      maxBounds: [[G.lat_s - 10, G.lon_w - 10], [G.lat_n + 10, G.lon_e + 10]]
-    });
+    // no maxBounds: when zoomed out the window is larger than any sensible bounds, and Leaflet then pulls the map back to
+    // the middle of them after every drag, so the map could not be moved
+    var map = L.map("map", { zoomControl: true, zoomSnap: 0.25, minZoom: 3, maxZoom: 9, worldCopyJump: false });
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
       { noWrap: true, maxNativeZoom: 16,
         attribution: "GSMaP &copy; JAXA &middot; Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ" }).addTo(map);
