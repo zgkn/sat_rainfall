@@ -39,7 +39,7 @@ body { font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; backgro
 .wv-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 #wv-valid { font-weight: 600; font-variant-numeric: tabular-nums; }
 #wv-run { color: var(--wv-ink-2); font-size: 12px; }
-#wv-sister { color: var(--wv-accent); font-size: 12px; }
+#wv-hint { margin-top: 2px; color: var(--wv-ink-2); font-size: 11.5px; }
 #wv-demo { margin-top: 6px; padding: 2px 8px; border-radius: 6px; background: var(--wv-accent); color: var(--wv-accent-ink); font-weight: 600; font-size: 12px; }
 
 #wv-legend { left: 12px; bottom: 214px; width: 290px; padding: 8px 12px 6px; }
@@ -83,10 +83,43 @@ body { font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; backgro
 #wv-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 #wv-table th, #wv-table td { text-align: left; padding: 2px 8px 2px 0; border-bottom: 1px solid var(--wv-grid); }
 
-#wv-shade { position: absolute; left: 0; top: 0; pointer-events: none; }
 
 @media (max-width: 760px) {
   #wv-top { left: 52px; top: 8px; padding: 6px 8px; max-width: calc(100% - 64px); }
   #wv-legend { width: 240px; bottom: 236px; padding: 6px 10px 4px; }
   #wv-readout,   #wv-bottom { bottom: 44px; }
+}
+
+/* area time series */
+#wv-sg { top: 70px; right: 12px; width: 400px; padding: 8px 10px 6px; z-index: 1002; background: var(--wv-solid); max-height: calc(100% - 300px); overflow-y: auto; }
+.wv-sg-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.wv-sg-head > div { min-width: 0; flex: 1; }
+#wv-sg-place { font: inherit; font-weight: 700; font-size: 14px; color: var(--wv-ink); background: transparent; border: 1px solid var(--wv-line); border-radius: 6px; padding: 2px 4px; max-width: 100%; }
+#wv-sg-place option { color: #1a1a19; background: #fff; }
+#wv-sg-sub { display: block; margin-top: 3px; color: var(--wv-ink-2); font-size: 12px; }
+#wv-sg-close { font: inherit; font-size: 20px; line-height: 1; cursor: pointer; padding: 0 6px; border-radius: 6px; border: 1px solid var(--wv-line); background: transparent; color: var(--wv-ink); }
+#wv-sg-stat { display: flex; gap: 4px; margin: 6px 0 0; }
+#wv-sg-stat button, #wv-sg-vars button { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--wv-line); background: transparent; color: var(--wv-ink); }
+#wv-sg-stat button { font-weight: 600; padding: 3px 14px; border-radius: 6px; }
+#wv-sg-vars { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+#wv-sg-vars button { font-size: 11.5px; padding: 2px 8px; border-radius: 12px; }
+#wv-sg-stat button[aria-selected="true"], #wv-sg-vars button[aria-pressed="true"] { background: var(--wv-accent); border-color: var(--wv-accent); color: var(--wv-accent-ink); }
+#wv-sg select:focus-visible, #wv-sg button:focus-visible { outline: 2px solid var(--wv-accent); outline-offset: 2px; }
+#wv-sg-read { min-height: 2.7em; margin: 2px 0 4px; font-size: 11.5px; line-height: 1.3; color: var(--wv-ink-2); font-variant-numeric: tabular-nums; }
+#wv-sg-chart svg { display: block; width: 100%; touch-action: pan-y; cursor: crosshair; }
+#wv-sg-chart text { fill: var(--wv-ink-2); font-size: 10px; font-family: inherit; }
+#wv-sg-chart .sg-title { fill: var(--wv-ink); font-weight: 600; font-size: 11px; }
+#wv-sg-chart .sg-grid { stroke: var(--wv-grid); stroke-width: 1; }
+#wv-sg-chart .sg-day { stroke: var(--wv-line); stroke-width: 1; stroke-dasharray: 2 3; }
+#wv-sg-chart .sg-sel { fill: var(--wv-grid); }
+#wv-sg-chart .sg-bar { fill: var(--wv-accent); }
+#wv-sg-chart .sg-bar-day { fill: var(--wv-bar); }
+#wv-sg-chart .sg-bar-day.on, #wv-sg-chart.all .sg-bar-day { fill: var(--wv-bar-on); }
+#wv-sg-chart .sg-hover { stroke: var(--wv-ink-2); stroke-width: 1; stroke-dasharray: 3 2; }
+.wv-sg-credit { margin-top: 4px; font-size: 10px; color: var(--wv-ink-2); }
+@media (max-width: 760px) {
+  /* a sheet between the title and the day chart; the legend gives way */
+  #wv-sg { top: 112px; bottom: 236px; left: 8px; right: 8px; width: auto; max-height: none; padding: 6px 8px 4px; }
+  #wv-sg-read { font-size: 11px; }
+  body.wv-sg-open #wv-legend { display: none; }
 }

@@ -8,7 +8,8 @@
 
 GSMaP files are plain binary: 3600 x 1200 little-endian float32 (0.1 degree, 60N-60S, row 0 = north, column 0 = 0E),
 rain rate in mm/h, negative = missing. The map shows the *daily mean rain rate x 24* in mm/day, cropped to the same
-domain as the model_forecast site (84-156E, 12S-50N).
+domain as the model_forecast site (84-156E, 12S-50N). The time-series window uses the same areas as model_forecast
+(`--assets <model_forecast checkout>` supplies its regions.geojson).
 """
 import argparse
 import datetime as dt
@@ -27,6 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
+import places as areas
+
 HERE = Path(__file__).resolve().parent
 
 # ---- grid ------------------------------------------------------------------------------------------------
@@ -40,6 +43,7 @@ ROW1 = int(round((G_LAT_N - REGION["south"]) / G_D))
 NX, NY = COL1 - COL0, ROW1 - ROW0
 LAT_C0 = G_LAT_N - ROW0 * G_D - G_D / 2    # latitude of the centre of the first (northern) row
 LON_C0 = G_LON_W + COL0 * G_D + G_D / 2
+GRID = areas.Grid(lat_n=REGION["north"], lon_w=REGION["west"], d=G_D, ny=NY, nx=NX)
 
 # ---- JAXA server -----------------------------------------------------------------------------------------
 HOST = "hokusai.eorc.jaxa.jp"
@@ -146,28 +150,33 @@ class Ftp:
         return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
 
 
-# ---- one day: hourly files -> running sum and count ------------------------------------------------------
+# ---- one day: hourly files -> running sum and count, plus the hourly series of every place -------------------
 def day_cache(cache_dir, day):
     return Path(cache_dir) / f"day_{day:%Y%m%d}.npz"
 
 
-def load_day(path):
+def load_day(path, ids):
+    """Cached sums of a day, or an empty day. The hourly place series cannot be rebuilt from the sums, so a cache made for
+    another set of places is dropped (its hours are downloaded again)."""
     if path.exists():
         try:
             with np.load(path) as z:
-                if z["sum"].shape == (NY, NX):
-                    return z["sum"].copy(), z["cnt"].copy(), z["hours"].copy()
+                if z["sum"].shape == (NY, NX) and list(z["ids"]) == ids:
+                    return z["sum"].copy(), z["cnt"].copy(), z["hours"].copy(), z["tsm"].copy(), z["tsx"].copy()
         except Exception as e:
             warn(f"ignoring unreadable cache {path.name}: {e}")
-    return np.zeros((NY, NX), np.float32), np.zeros((NY, NX), np.uint8), np.zeros(24, bool)
+    nan = np.full((24, len(ids)), np.nan, np.float32)
+    return np.zeros((NY, NX), np.float32), np.zeros((NY, NX), np.uint8), np.zeros(24, bool), nan, nan.copy()
 
 
-def fetch_day(client, day, cache_dir):
-    """Add every hour of `day` that is not cached yet. Returns (sum, cnt, hours) and writes the cache."""
+def fetch_day(client, day, cache_dir, places=()):
+    """Add every hour of `day` that is not cached yet. Returns (sum, cnt, hours, mean series, max series) and writes the
+    cache. The series are (24, n places) hourly rain rates in mm/h."""
     path = day_cache(cache_dir, day)
-    s, c, hours = load_day(path)
+    ids = [p.id for p in places]
+    s, c, hours, tsm, tsx = load_day(path, ids)
     if hours.all():
-        return s, c, hours
+        return s, c, hours, tsm, tsx
     files = client.day_files(day)
     todo = [h for h in sorted(files) if not hours[h]]
     for h in todo:
@@ -179,11 +188,13 @@ def fetch_day(client, day, cache_dir):
         ok = np.isfinite(a)
         s[ok] += a[ok]
         c += ok
+        for k, p in enumerate(places):
+            tsm[h, k], tsx[h, k] = p.stats(a)
         hours[h] = True
     print(f"{day}: {hours.sum()}/24 hourly files ({len(todo)} new, {len(files)} on the server)", flush=True)
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, sum=s, cnt=c, hours=hours)
-    return s, c, hours
+    np.savez_compressed(path, sum=s, cnt=c, hours=hours, tsm=tsm, tsx=tsx, ids=np.array(ids))
+    return s, c, hours, tsm, tsx
 
 
 def daily_mm(s, c, min_hours):
@@ -195,10 +206,11 @@ def daily_mm(s, c, min_hours):
 
 
 # ---- demo data (layout check only; never mistake it for observations) -----------------------------------
-def demo_days(days):
+def demo_days(days, places=()):
     rng = np.random.default_rng(7)
     lat = LAT_C0 - np.arange(NY)[:, None] * G_D
     lon = LON_C0 + np.arange(NX)[None, :] * G_D
+    diurnal = 1 + 0.8 * np.sin(2 * np.pi * (np.arange(24) - 9) / 24)        # peak in the afternoon (UTC+8)
     out = []
     for i, day in enumerate(days):
         mm = np.zeros((NY, NX), np.float32)
@@ -208,7 +220,13 @@ def demo_days(days):
             mm += amp * np.exp(-(((lat - la) ** 2) + ((lon - lo) * 0.9) ** 2) / (2 * r * r))
         itcz = 8 * np.exp(-((lat - 5 + 3 * np.sin(i)) ** 2) / 30)
         mm = (mm + itcz * rng.uniform(0.5, 1.5)).astype(np.float32)
-        out.append((day, mm, 24))
+        tsm = np.full((24, len(places)), np.nan, np.float32)
+        tsx = tsm.copy()
+        for h in range(24):
+            hour = mm / 24 * diurnal[h] * rng.uniform(0.6, 1.4)
+            for k, p in enumerate(places):
+                tsm[h, k], tsx[h, k] = p.stats(hour)
+        out.append({"date": day, "mm": mm, "hours": 24, "tsm": tsm, "tsx": tsx})
     return out
 
 
@@ -229,8 +247,13 @@ def domain_mean(mm):
     return float((mm[ok] * w[ok]).sum() / w[ok].sum()) if ok.any() else None
 
 
-def write_site(out, days, product, demo, assets):
-    """days: [(date, mm/day array, hours)] oldest first."""
+def clean(values, nd):
+    """Numbers for the manifest: rounded, None (JSON null) where there is no value."""
+    return [None if not np.isfinite(v) else round(float(v), nd) for v in values]
+
+
+def write_site(out, days, places, product, demo, assets):
+    """days: [{date, mm (mm/day field), hours, tsm, tsx}] oldest first."""
     out = Path(out)
     data = out / "data"
     if out.exists():
@@ -238,13 +261,31 @@ def write_site(out, days, product, demo, assets):
     data.mkdir(parents=True)
     for f in ("index.html", "viewer.js", "viewer.css"):
         shutil.copy(HERE / "web" / f, out / f)
-    stack = np.stack([encode(mm) for _, mm, _ in days])
+    stack = np.stack([encode(d["mm"]) for d in days])
     (data / "rain.bin.gz").write_bytes(gzip.compress(stack.astype("<u2").tobytes(), 9, mtime=0))
     coast = Path(assets) / "coastlines.geojson" if assets else None
     if coast and coast.exists():
         shutil.copy(coast, data / "coastlines.json")
     else:
         warn("coastlines.geojson not found (use --assets <model_forecast checkout>); the map is drawn without coastlines")
+    regions = Path(assets) / "regions.geojson" if assets else None
+    has_regions = bool(regions and regions.exists())
+    if has_regions:
+        gj = json.loads(regions.read_text())
+        for f in gj["features"]:
+            f["properties"] = {k: f["properties"][k] for k in ("id", "name", "group") if k in f["properties"]}
+        (data / "regions.json").write_text(json.dumps(gj, separators=(",", ":")))
+    elif len(places) > len(areas.BOXES):
+        warn("regions.geojson not found: no region outlines")
+    hours_t = [int(dt.datetime(d["date"].year, d["date"].month, d["date"].day, h, tzinfo=dt.timezone.utc).timestamp())
+               for d in days for h in range(24)]
+    series = {}
+    for k, p in enumerate(places):
+        daily = [p.stats(d["mm"]) for d in days]
+        series[p.id] = {
+            "hourly": {"mean": clean(np.concatenate([d["tsm"][:, k] for d in days]), 2),
+                       "max": clean(np.concatenate([d["tsx"][:, k] for d in days]), 2)},
+            "daily": {"mean": clean([m for m, _ in daily], 1), "max": clean([x for _, x in daily], 1)}}
     manifest = {
         "title": "Weekly satellite rainfall, southeast Asia and Japan",
         "source": "JAXA GSMaP (demo data)" if demo else f"JAXA {PRODUCT_NAME[product]}",
@@ -253,12 +294,17 @@ def write_site(out, days, product, demo, assets):
         "grid": {"nlat": NY, "nlon": NX, "d": G_D, "lat_n": REGION["north"], "lat_s": REGION["south"],
                  "lon_w": REGION["west"], "lon_e": REGION["east"]},
         "scale": {"unit": "mm/day", "bins": BINS, "colors": COLORS, "step": 0.1, "missing": MISSING_U16},
-        "days": [{"date": str(d), "hours": int(h), "mean": domain_mean(mm)} for d, mm, h in days],
-        "files": {"rain": "data/rain.bin.gz", "coast": "data/coastlines.json" if coast and coast.exists() else None},
+        "days": [{"date": str(d["date"]), "hours": int(d["hours"]), "mean": domain_mean(d["mm"])} for d in days],
+        "hours": hours_t,
+        "places": [p.describe() for p in places],
+        "series": series,
+        "files": {"rain": "data/rain.bin.gz", "coast": "data/coastlines.json" if coast and coast.exists() else None,
+                  "regions": "data/regions.json" if has_regions else None},
     }
     (data / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")))
     (out / ".nojekyll").write_text("")
-    print(f"wrote {out}: {len(days)} days, {sum(p.stat().st_size for p in out.rglob('*') if p.is_file()) / 1e6:.1f} MB", flush=True)
+    print(f"wrote {out}: {len(days)} days, {len(places)} places, "
+          f"{sum(p.stat().st_size for p in out.rglob('*') if p.is_file()) / 1e6:.1f} MB", flush=True)
     return manifest
 
 
@@ -299,8 +345,13 @@ def main(argv=None):
         print("\n".join(c.list_dir(a.list)))
         return 0
 
+    regions = a.assets / "regions.geojson" if a.assets else None
+    if regions is not None and not regions.exists():
+        warn(f"{regions} not found: only the Singapore box gets a time series")
+    places = areas.load_places(GRID, regions)
+
     if a.demo:
-        result = demo_days(days)
+        result = demo_days(days, places)
     else:
         if not (user and pw):
             sys.exit("GSMAP_USER and GSMAP_PASSWORD are not set (register free at "
@@ -309,7 +360,7 @@ def main(argv=None):
         def one(day):
             c = Ftp(a.host, user, pw, dirs)
             try:
-                return fetch_day(c, day, a.cache_dir)
+                return fetch_day(c, day, a.cache_dir, places)
             finally:
                 c.close()
 
@@ -323,12 +374,12 @@ def main(argv=None):
                          f"Test: curl -u 'USER:PASSWORD' ftp://{a.host}/")
             raise
         result = []
-        for day, (s, c, hours) in zip(days, fetched):
+        for day, (s, c, hours, tsm, tsx) in zip(days, fetched):
             n = int(hours.sum())
             if n < a.min_hours:
                 warn(f"{day}: only {n} hourly files (need {a.min_hours}); the day is left out")
                 continue
-            result.append((day, daily_mm(s, c, a.min_hours), n))
+            result.append({"date": day, "mm": daily_mm(s, c, a.min_hours), "hours": n, "tsm": tsm, "tsx": tsx})
         keep = {day_cache(a.cache_dir, d).name for d in days}
         for old in Path(a.cache_dir).glob("day_*.npz"):          # the cache only ever holds the current window
             if old.name not in keep:
@@ -336,7 +387,7 @@ def main(argv=None):
         if not result:
             sys.exit(f"no usable days. Check the account and the server layout: python gsmap.py --list / "
                      f"(tried {', '.join(dirs)})")
-    write_site(a.out, result, a.product, a.demo, a.assets)
+    write_site(a.out, result, places, a.product, a.demo, a.assets)
     return 0
 
 

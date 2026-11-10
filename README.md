@@ -7,7 +7,7 @@ Weekly satellite rainfall for **southeast Asia and Japan** (84-156E, 12S-50N, th
 ```
 export GSMAP_USER=...  GSMAP_PASSWORD=...
 pip install -r requirements.txt
-python gsmap.py --assets ../model_forecast        # -> site/   (--assets only adds the coastlines)
+python gsmap.py --assets ../model_forecast        # -> site/   (--assets: coastlines and the areas of the time series)
 python -m http.server -d site                      # open http://localhost:8000
 python gsmap.py --demo                             # synthetic data, no account: checks the layout only
 ```
@@ -18,6 +18,11 @@ python gsmap.py --demo                             # synthetic data, no account:
 * The bars show the **area-mean** of the whole map for each day; click a bar (or use the arrow keys, or play) to switch
   day. **7-day mean** averages the daily maps. A table with the hourly-file counts sits under the chart.
 * Hover for the value under the cursor. Light and dark mode follow the system, like model_forecast.
+* **Time series for areas**: click an outlined area (or pick it in the menu) to open a window with the **hourly rain
+  rate (mm/h)** and the **daily rain (mm/day)** of the week. **Mean** is the area mean, **Max** the largest cell
+  (of the cells at least half inside the area). Hover a chart for the value; click a day to show it on the map. The
+  areas are the ones of model_forecast (`regions.geojson` there): Singapore, six Indonesian provinces, five mainland
+  countries, two Johor districts and Kyushu. Each cell counts by the fraction of it inside the outline (`places.py`).
 * A day is a **UTC** day (07:00-07:00 local in western Indonesia). The window is the 7 complete days ending yesterday.
 
 ## The workflow (`.github/workflows/gsmap.yml`)
@@ -47,10 +52,11 @@ rain rate in mm/h, negative = missing. A file with the wrong size or implausible
 * `--product nrt` (default) is GSMaP_NRT, `--product gauge` the gauge-adjusted GSMaP_Gauge_NRT.
 * A day needs at least `--min-hours` (18) hourly files and a cell at least that many valid hours, otherwise it is left
   out; the header of each day shows the file count. Missing hours are retried on the next run.
-* **The server folder layout is the one part not verified against the live server** (it was written from JAXA's format
-  description, and the author's environment could not reach JAXA). The script looks for
-  `<dir>/YYYY/MM/DD/gsmap_*.YYYYMMDD.HH00*.dat[.gz]` in a few candidate folders (`REMOTE_DIRS` in `gsmap.py`). If the first
-  run says *no usable days*, look at the real tree and point the script at it:
+* Hours are labelled with the time stamp of the JAXA file (`HH00`, UTC). The cache of a day holds the sums and the hourly
+  series of every area, so changing the list of areas makes the next run download the week again.
+* The hourly files are found as `<dir>/YYYY/MM/DD/gsmap_*.YYYYMMDD.HH00*.dat[.gz]` in a few candidate folders
+  (`REMOTE_DIRS` in `gsmap.py`); the first of them worked on JAXA's server in the test run. If JAXA moves them and a run
+  says *no usable days*, look at the real tree and point the script at it:
 
   ```
   python gsmap.py --list /                        # then --list /realtime, ...
@@ -60,6 +66,8 @@ rain rate in mm/h, negative = missing. A file with the wrong size or implausible
 ## Tests
 
 `python -m pytest -q` covers the binary parsing and cropping (a marked cell lands where it should), the daily mean,
-the cache and partial-day logic, file-name matching and the build output. None of them needs network access.
+the cache and partial-day logic, file-name matching, the area weights (exact fractions, holes, missing data), the whole
+build with a fake server, and the build output. None of them needs network access; the region test reads
+`$MODEL_FORECAST_DIR/regions.geojson` (default `../model_forecast`) and is skipped without it.
 
-Data: GSMaP (c) JAXA. Basemap: Esri. Coastlines: model_forecast.
+Data: GSMaP (c) JAXA. Basemap: Esri. Coastlines and areas: model_forecast (boundaries: Natural Earth; Johor districts (c) geoBoundaries, CC BY 4.0).

@@ -33,8 +33,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      MODEL_FORECAST_DIR: model_forecast
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: zgkn/model_forecast
+          path: model_forecast
+          sparse-checkout: regions.geojson
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -51,12 +59,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # model_forecast supplies the coastlines, so the two sites share one basemap and domain
+      # model_forecast supplies the coastlines and the areas of the time series, so the two sites share one basemap,
+      # one domain and the same places
       - uses: actions/checkout@v4
         with:
           repository: zgkn/model_forecast
           path: model_forecast
-          sparse-checkout: coastlines.geojson
+          sparse-checkout: |
+            coastlines.geojson
+            regions.geojson
           sparse-checkout-cone-mode: false
 
       - uses: actions/setup-python@v5
