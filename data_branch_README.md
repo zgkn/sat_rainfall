@@ -30,6 +30,9 @@ areas          {id: {name, kind, group, members?, cells,
   Myanmar, Thailand, Vietnam, Kota Tinggi, Mersing, Kyushu, plus the combined areas `sumatra`, `kalimantan` and
   `mainland_north` (`members` lists their parts; their cell weights are the sum of the members').
 * `daily_*` is the mean rate over the day times 24, in mm/day.
+* The mean includes edge cells that are less than half inside the area and the max does not, so in small areas (Singapore,
+  the Johor districts) the hourly **max can be a little below the mean** (by a few hundredths of mm/h) when the only
+  rain falls on an edge cell.
 
 ## manifest.json and rain.bin.gz (the map of the page)
 

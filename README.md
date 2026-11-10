@@ -65,7 +65,8 @@ tools can read the latest rainfall without parsing the page. Read it raw, for ex
   says how many). `--include-today` (on in the workflow) adds it; it needs no minimum of hours, its daily values are the
   mean rain *rate* of those hours times 24, and it never reaches the page or the complete-days rules.
 * The combined areas add the cell weights of their members (Jambi + South Sumatra; West + Central + South Kalimantan;
-  Cambodia, Lao PDR, Myanmar, Thailand, Vietnam). **Max** is always the largest cell among those at least half inside.
+  Cambodia, Lao PDR, Myanmar, Thailand, Vietnam). **Max** is always the largest cell among those at least half inside,
+  so in small areas it can sit slightly below the mean (the mean also counts the edge cells that are less than half inside).
 * Only the default branch writes it, never a `demo` run, and nothing is written when a build did not finish. The step
   runs with the repository token only; the JAXA credentials are used by the download step alone and appear in no file.
 * The workflow needs `contents: write` (set on the build job).
