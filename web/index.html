@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weekly satellite rainfall</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<div id="map"></div>
+
+<div id="wv-top" class="wv-panel">
+  <div class="wv-row">
+    <div class="wv-info">
+      <div id="wv-valid">Loading&hellip;</div>
+      <div id="wv-run"></div>
+    </div>
+    <a id="wv-sister" href="https://github.com/zgkn/model_forecast" target="_blank" rel="noopener">model_forecast &rarr;</a>
+  </div>
+  <div id="wv-demo" hidden>Synthetic demo data &ndash; not observations</div>
+</div>
+
+<div id="wv-legend" class="wv-panel">
+  <div class="wv-legend-title">Daily rain (mm/day)</div>
+  <div id="wv-legend-bar"></div>
+  <div id="wv-legend-ticks"></div>
+</div>
+
+<div id="wv-readout" class="wv-panel" hidden></div>
+
+<div id="wv-bottom" class="wv-panel">
+  <div class="wv-bottom-row">
+    <button id="wv-play" type="button" aria-label="Play">&#9654;</button>
+    <div class="wv-bottom-title">Area-mean rain per day <span>(mm/day, whole map)</span></div>
+    <button id="wv-week" type="button" aria-pressed="false">7-day mean</button>
+  </div>
+  <div id="wv-chart" role="group" aria-label="Pick a day"></div>
+  <details id="wv-table-wrap">
+    <summary>Table</summary>
+    <table id="wv-table"><thead><tr><th>Day (UTC)</th><th>Hourly files</th><th>Area mean mm/day</th></tr></thead><tbody></tbody></table>
+  </details>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>

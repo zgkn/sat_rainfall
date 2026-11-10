@@ -1,0 +1,117 @@
+name: Weekly GSMaP rainfall
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Number of complete UTC days to average (ending yesterday)"
+        default: "7"
+      product:
+        description: "nrt = GSMaP_NRT, gauge = gauge-adjusted GSMaP_Gauge_NRT"
+        type: choice
+        options: [nrt, gauge]
+        default: nrt
+      demo:
+        description: "Synthetic data, no JAXA download (layout check only; never deployed)"
+        type: boolean
+        default: false
+  schedule:
+    # GSMaP_NRT lags real time by about 4 h, so yesterday's last hour (23-24 UTC) is there by ~04:00 UTC.
+    - cron: "17 5 * * *"
+  push:
+    branches: ["**"]
+    paths-ignore: ["README.md"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gsmap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+
+  build:
+    # pushes only run the tests; a manual or scheduled run downloads the data
+    if: github.event_name != 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # model_forecast supplies the coastlines, so the two sites share one basemap and domain
+      - uses: actions/checkout@v4
+        with:
+          repository: zgkn/model_forecast
+          path: model_forecast
+          sparse-checkout: coastlines.geojson
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # The cropped daily sums of the window live in the Actions cache, so a normal run only downloads yesterday.
+      # Each run saves a fresh entry (the key is unique) and the next one restores the newest.
+      - uses: actions/cache@v4
+        with:
+          path: cache
+          key: gsmap-cache-${{ github.run_id }}
+          restore-keys: gsmap-cache-
+
+      - name: Download GSMaP and build the site
+        env:
+          GSMAP_USER: ${{ secrets.GSMAP_USER }}
+          GSMAP_PASSWORD: ${{ secrets.GSMAP_PASSWORD }}
+          DAYS: ${{ inputs.days || '7' }}
+          PRODUCT: ${{ inputs.product || 'nrt' }}
+          DEMO: ${{ inputs.demo && '--demo' || '' }}
+        run: python gsmap.py --days "$DAYS" --product "$PRODUCT" $DEMO --assets model_forecast --out site
+
+      - name: Check the output
+        run: |
+          test -s site/index.html
+          test -s site/data/rain.bin.gz
+          jq -r '"\(.source): \(.days | length) days, built \(.generated)"' site/data/manifest.json
+          jq -e '(.days | length) >= 1' site/data/manifest.json
+          du -sh site
+
+      # downloadable from the run page, also when the run was started from a branch that does not deploy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: site
+
+      - uses: actions/upload-pages-artifact@v3
+        if: ${{ !inputs.demo }}
+        with:
+          path: site
+
+  deploy:
+    # only the default branch publishes, and never synthetic data
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.demo
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
