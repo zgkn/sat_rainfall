@@ -33,7 +33,7 @@ artifact. The cropped daily sums are kept in the Actions cache, so after the fir
 
 ### One-time setup
 
-1. **JAXA account** (free): register at <https://sharaku.eorc.jaxa.jp/GSMaP/registration.htm>; JAXA emails an FTP user
+1. **JAXA account** (free): register at <https://sharaku.eorc.jaxa.jp/GSMaP/registration.html>; JAXA emails an FTP user
    name and password for `hokusai.eorc.jaxa.jp`. Follow JAXA's data policy and keep the credit on the page.
 2. Repository **Settings -> Secrets and variables -> Actions**: add `GSMAP_USER` and `GSMAP_PASSWORD`.
 3. **Settings -> Pages -> Source: GitHub Actions**.
