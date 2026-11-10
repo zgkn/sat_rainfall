@@ -138,3 +138,18 @@ def test_missing_credentials_exit_with_a_hint(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as e:
         gsmap.main(["--out", str(tmp_path / "s")])
     assert "GSMAP_USER" in str(e.value)
+
+
+def test_rejected_login_explains_itself(monkeypatch, tmp_path):
+    import ftplib
+    monkeypatch.setenv("GSMAP_USER", " user \n")
+    monkeypatch.setenv("GSMAP_PASSWORD", "pw")
+
+    def refuse(self, *a, **k):
+        assert (self.user, self.password) == ("user", "pw")        # whitespace was stripped
+        raise ftplib.error_perm("530 Login incorrect.")
+
+    monkeypatch.setattr(gsmap.Ftp, "day_files", refuse)
+    with pytest.raises(SystemExit) as e:
+        gsmap.main(["--out", str(tmp_path / "s"), "--cache-dir", str(tmp_path / "c"), "--workers", "1"])
+    assert "rejected the login" in str(e.value)

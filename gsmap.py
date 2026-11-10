@@ -286,7 +286,8 @@ def main(argv=None):
     ap.add_argument("--list", metavar="PATH", help="print the server folder PATH and exit (to find the data layout)")
     a = ap.parse_args(argv)
 
-    user, pw = os.environ.get("GSMAP_USER"), os.environ.get("GSMAP_PASSWORD")
+    user = os.environ.get("GSMAP_USER", "").strip()          # pasted secrets often carry a trailing newline or space
+    pw = os.environ.get("GSMAP_PASSWORD", "").strip()
     dirs = [d.strip() for d in a.remote_dir.split(",")] if a.remote_dir else REMOTE_DIRS[a.product]
     end = a.end or (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1))
     days = window(end, a.days)
@@ -312,8 +313,15 @@ def main(argv=None):
             finally:
                 c.close()
 
-        with ThreadPoolExecutor(max(1, a.workers)) as pool:
-            fetched = list(pool.map(one, days))
+        try:
+            with ThreadPoolExecutor(max(1, a.workers)) as pool:
+                fetched = list(pool.map(one, days))
+        except ftplib.error_perm as e:
+            if str(e).startswith("530"):
+                sys.exit(f"JAXA rejected the login ({e}). Check GSMAP_USER / GSMAP_PASSWORD: use exactly the user name and "
+                         f"password from JAXA's registration email, with no quotes or spaces. "
+                         f"Test: curl -u 'USER:PASSWORD' ftp://{a.host}/")
+            raise
         result = []
         for day, (s, c, hours) in zip(days, fetched):
             n = int(hours.sum())
