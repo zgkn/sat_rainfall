@@ -121,8 +121,11 @@ class Ftp:
         def go(f):
             try:
                 return [n.rsplit("/", 1)[-1] for n in f.nlst(path)]
-            except ftplib.error_perm as e:
-                if str(e).startswith("550"):                  # no such folder / empty
+            except (ftplib.error_perm, ftplib.error_temp) as e:
+                msg = str(e)
+                # A folder that does not exist (yet) is an empty listing: 550, or JAXA's 450 "No such file or directory", which
+                # is what it answers for the folder of the current UTC day until the first file is written (~4 h after 00:00).
+                if msg.startswith("550") or (msg.startswith("450") and "no such file" in msg.lower()):
                     return []
                 raise
         return self._retry(go)
@@ -455,7 +458,7 @@ def main(argv=None):
 
         try:
             with ThreadPoolExecutor(max(1, a.workers)) as pool:
-                fetched = list(pool.map(one, days + extra))
+                fetched = list(pool.map(one, days))
         except ftplib.error_perm as e:
             if str(e).startswith("530"):
                 sys.exit(f"JAXA rejected the login ({e}). Check GSMAP_USER / GSMAP_PASSWORD: use exactly the user name and "
@@ -470,9 +473,14 @@ def main(argv=None):
                 continue
             result.append({"date": day, "mm": daily_mm(s, c, a.min_hours), "hours": n, "have": hours, "partial": n < 24,
                            "tsm": tsm, "tsx": tsx})
-        if extra:                           # no minimum of hours: the cells need one valid hour, the day is flagged partial
-            s, c, hours, tsm, tsx = fetched[len(days)]
-            today_entry = {"date": today, "mm": daily_mm(s, c, 1), "hours": int(hours.sum()), "have": hours, "partial": True,
+        for day in extra:                   # the day in progress is an extra for summary.json: if it cannot be read, skip it
+            try:
+                s, c, hours, tsm, tsx = one(day)
+            except (ftplib.Error, OSError, EOFError) as e:
+                warn(f"{day}: the day in progress could not be read ({e}); summary.json is built without it")
+                continue
+            # no minimum of hours: the cells need one valid hour, the day is flagged partial
+            today_entry = {"date": day, "mm": daily_mm(s, c, 1), "hours": int(hours.sum()), "have": hours, "partial": True,
                            "in_progress": True, "tsm": tsm, "tsx": tsx}
         keep = {day_cache(a.cache_dir, d).name for d in days + extra}
         for old in Path(a.cache_dir).glob("day_*.npz"):          # the cache only ever holds the current window
